@@ -28,7 +28,8 @@ Having that said, here are the usage details from the `--help` flag:
 usage:
 
     gcexport.py [-h] [--version] [--username [USERNAME]]
-                [--password [PASSWORD]] [-c [COUNT]]
+                [--password [PASSWORD]] [--login]
+                [--token-file [TOKEN_FILE]] [-c [COUNT]]
                 [-f [{gpx,tcx,original}]] [-d [DIRECTORY]] [-u]
 
 optional arguments:
@@ -50,6 +51,17 @@ optional arguments:
     
         your Garmin Connect password
         otherwise, you will be prompted
+    
+    --login
+    
+        perform an interactive login (including two-factor
+        authentication if enabled), store the session token
+        in a file and exit
+    
+    --token-file [TOKEN_FILE]
+    
+        file used to store/load the Garmin session token
+        default: '~/.gcexport_token'
     
     -s [INDEX], --start [INDEX]
     
@@ -83,13 +95,38 @@ Examples
 
 downloads your 3 most recent activities in the FIT file format (or whatever they were uploaded as) into the `~/MyActivities` directory (unless they already exist)
 
+Login and session token
+-----------------------
+To avoid typing your credentials on every run, log in once and let the script store the session token in a file:
+
+```
+python gcexport.py --login
+```
+
+The login is interactive: you will be prompted for your username and password (nothing is displayed while typing the password). If two-factor authentication (MFA) is enabled on your Garmin account, you will additionally be prompted for the one-time code sent by Garmin. The resulting session token is stored in `~/.gcexport_token` (override with `--token-file <path>`; the file is created with owner-only permissions, `chmod 600`).
+
+Subsequent runs reuse the stored token automatically:
+
+```
+python gcexport.py -c 10
+```
+
+If the stored token has expired, just run `python gcexport.py --login` again to refresh it.
+
 Dislaimer
 
-Using the `--username` and `--password` flags are not recommended because your password will be stored in your command line history. Instead, omit them to be prompted (and note that nothing will be displayed when you type your password).
+Using the `--username` and `--password` flags are not recommended because your password will be stored in your command line history. Instead, omit them to be prompted (and note that nothing will be displayed when you type your password). Prefer `--login` once and let the token file handle authentication afterwards.
 
 Python
 ------
-Alternatively, you may run it with `./gcexport.py` if you set the file as executable (i.e., `chmod u+x gcexport.py`). This requires Python. Luckly most Mac and Linux users should already have it. Beside that and as already mentioned above some basic command line experience might be helpful.
+This script requires Python 3. Run `./setup.sh` to create a virtual environment (`venv/`) and verify the script compiles; no third-party packages are needed. Then activate it:
+
+```
+. venv/bin/activate
+python gcexport.py --help
+```
+
+Alternatively, you may run it with `./gcexport.py` if you set the file as executable (i.e., `chmod u+x gcexport.py`). This requires Python 3. Luckly most Mac and Linux users should already have it. Beside that and as already mentioned above some basic command line experience might be helpful.
 
 `python /mygarminconnectexportscriptfolder/gcexport.py -d /mygarminconnectexportsfolder -c "mynumberofexports" -f original -u --username "mygarminusername" --password "mygarminpassword"`
 

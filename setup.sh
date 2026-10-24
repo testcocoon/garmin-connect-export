@@ -1,8 +1,8 @@
 #!/bin/sh
 #
 # Setup script for garmin-connect-export
-# Creates a Python 2 virtual environment and verifies the script
-# can be loaded (gcexport.py uses the Python 2 standard library only,
+# Creates a Python 3 virtual environment and verifies the script
+# compiles (gcexport.py uses the Python 3 standard library only,
 # so no additional packages need to be installed).
 #
 # Usage:
@@ -16,44 +16,36 @@ set -e
 VENV_DIR="${1:-venv}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-find_python2() {
-    if command -v python2 >/dev/null 2>&1; then
-        command -v python2
+find_python3() {
+    if command -v python3 >/dev/null 2>&1; then
+        command -v python3
     elif command -v python >/dev/null 2>&1; then
         PY="$(command -v python)"
-        if "$PY" -c 'import sys; sys.exit(0 if sys.version_info[0] == 2 else 1)'; then
+        if "$PY" -c 'import sys; sys.exit(0 if sys.version_info[0] == 3 else 1)'; then
             echo "$PY"
         fi
     fi
 }
 
-PYTHON2="$(find_python2)"
+PYTHON3="$(find_python3)"
 
-if [ -z "$PYTHON2" ]; then
-    echo "Error: no Python 2 interpreter found."
-    echo "gcexport.py requires Python 2 (it uses urllib2, cookielib and the sets module)."
-    echo "Install Python 2, e.g. on Debian/Ubuntu: sudo apt-get install python2 python2-virtualenv"
+if [ -z "$PYTHON3" ]; then
+    echo "Error: no Python 3 interpreter found."
+    echo "gcexport.py requires Python 3 (it uses urllib.request and http.cookiejar)."
+    echo "Install Python 3, e.g. on Debian/Ubuntu: sudo apt-get install python3 python3-venv"
     exit 1
 fi
 
-echo "Using Python 2 interpreter: $PYTHON2"
+echo "Using Python 3 interpreter: $PYTHON3"
 
 if [ -d "$SCRIPT_DIR/$VENV_DIR" ]; then
     echo "Virtual environment '$VENV_DIR' already exists, reusing it."
 else
     echo "Creating virtual environment '$VENV_DIR'..."
-    if "$PYTHON2" -m virtualenv "$SCRIPT_DIR/$VENV_DIR" 2>/dev/null; then
-        :
-    elif "$PYTHON2" -m pip >/dev/null 2>&1 && "$PYTHON2" -m pip install --user virtualenv >/dev/null 2>&1; then
-        "$PYTHON2" -m virtualenv "$SCRIPT_DIR/$VENV_DIR"
-    else
-        echo "Error: virtualenv is not available for Python 2."
-        echo "Install it with: $PYTHON2 -m pip install virtualenv"
-        exit 1
-    fi
+    "$PYTHON3" -m venv "$SCRIPT_DIR/$VENV_DIR"
 fi
 
-# gcexport.py only uses the Python 2 standard library, so there is
+# gcexport.py only uses the Python 3 standard library, so there is
 # nothing to pip-install. Verify the script compiles instead.
 echo "Verifying gcexport.py..."
 "$SCRIPT_DIR/$VENV_DIR/bin/python" -m py_compile "$SCRIPT_DIR/gcexport.py"
@@ -65,6 +57,7 @@ Setup complete.
 To use gcexport.py, activate the virtual environment first:
 
     . $VENV_DIR/bin/activate
+    python gcexport.py --login   # interactive login (with 2FA support), stores the session token
     python gcexport.py --help
 
 EOF
