@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
 """
@@ -12,26 +12,30 @@ Description:        This script will export fitness data from Garmin Connect
 """
 
 from math import floor
-from sets import Set
-from urllib import urlencode
+from urllib.parse import urlencode
 from datetime import datetime, timedelta, tzinfo
 from getpass import getpass
-from sys import argv
+import sys
 from os.path import isdir
 from os.path import isfile
+from os.path import expanduser
 from os import mkdir
 from os import remove
 from os import stat
+from os import chmod
 from xml.dom.minidom import parseString
 from subprocess import call
 
-import urllib, urllib2, cookielib, json, re
-from fileinput import filename
+import urllib.request
+import urllib.error
+import http.cookiejar
+import json
+import re
 
 import argparse
 import zipfile
 
-script_version = '1.0.0'
+script_version = '2.0.0'
 current_date = datetime.now().strftime('%Y-%m-%d')
 activities_directory = './' + current_date + '_garmin_connect_export'
 
@@ -42,6 +46,9 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--version', help="print version and exit", action="store_true")
 parser.add_argument('--username', help="your Garmin Connect username (otherwise, you will be prompted)", nargs='?')
 parser.add_argument('--password', help="your Garmin Connect password (otherwise, you will be prompted)", nargs='?')
+parser.add_argument('--login', help="perform an interactive login (including two-factor authentication if enabled), store the session token in a file and exit", action="store_true")
+parser.add_argument('--token-file', nargs='?', default=expanduser('~/.gcexport_token'),
+	help="file used to store/load the Garmin session token (default: '~/.gcexport_token')")
 
 parser.add_argument('-s', '--start', nargs='?', default="0",
 	help="Start index for downloading")
@@ -62,38 +69,38 @@ parser.add_argument('-u', '--unzip',
 args = parser.parse_args()
 
 if args.version:
-	print argv[0] + ", version " + script_version
-	exit(0)
+	print(sys.argv[0] + ", version " + script_version)
+	sys.exit(0)
 
-cookie_jar = cookielib.CookieJar()
-opener = urllib2.build_opener(urllib2.HTTPCookieProcessor(cookie_jar))
+cookie_jar = http.cookiejar.MozillaCookieJar()
+opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cookie_jar))
 # print cookie_jar
 
 # url is a string, post is a dictionary of POST parameters, headers is a dictionary of headers.
 def http_req(url, post=None, headers={}):
-	request = urllib2.Request(url)
+	request = urllib.request.Request(url)
 	# request.add_header('User-Agent', 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/1337 Safari/537.36')  # Tell Garmin we're some supported browser.
 	request.add_header('User-Agent', 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/54.0.2816.0 Safari/537.36')  # Tell Garmin we're some supported browser.
 	request.add_header('origin', 'https://sso.garmin.com') #this new header is needed after recent changes made by Garmin
 	request.add_header('NK', 'NT') #this new header is needed after recent changes made by Garmin to prevent HTTP Error 402: Payment Required
-	for header_key, header_value in headers.iteritems():
+	for header_key, header_value in headers.items():
 		request.add_header(header_key, header_value)
 	if post:
 		# print "POSTING"
-		post = urlencode(post)  # Convert dictionary to POST parameter string.
+		post = urlencode(post).encode('utf-8')  # Convert dictionary to POST parameter string.
 	# print request.headers
 	# print cookie_jar
 	# print post
 	# print request
-	response = opener.open(request, data=post)  # This line may throw a urllib2.HTTPError.
+	response = opener.open(request, data=post)  # This line may throw a urllib.error.HTTPError.
 
-	# N.B. urllib2 will follow any 302 redirects. Also, the "open" call above may throw a urllib2.HTTPError which is checked for below.
+	# N.B. urllib.request will follow any 302 redirects. Also, the "open" call above may throw a urllib.error.HTTPError which is checked for below.
 	# print response.getcode()
 	if response.getcode() == 204:
 		# For activities without GPS coordinates, there is no GPX download (204 = no content).
 		# Write an empty file to prevent redownloading it.
-		print 'Writing empty file since there was no GPX activity data...'
-		return ''
+		print('Writing empty file since there was no GPX activity data...')
+		return b''
 	elif response.getcode() != 200:
 		raise Exception('Bad return code (' + str(response.getcode()) + ') for: ' + url)
 
@@ -121,20 +128,20 @@ def trunc6(f):
 # A class building tzinfo objects for fixed-offset time zones.
 # (copied from https://docs.python.org/2/library/datetime.html)
 class FixedOffset(tzinfo):
-    """Fixed offset in minutes east from UTC."""
+	"""Fixed offset in minutes east from UTC."""
 
-    def __init__(self, offset, name):
-        self.__offset = timedelta(minutes = offset)
-        self.__name = name
+	def __init__(self, offset, name):
+		self.__offset = timedelta(minutes = offset)
+		self.__name = name
 
-    def utcoffset(self, dt):
-        return self.__offset
+	def utcoffset(self, dt):
+		return self.__offset
 
-    def tzname(self, dt):
-        return self.__name
+	def tzname(self, dt):
+		return self.__name
 
-    def dst(self, dt):
-        return timedelta(0)
+	def dst(self, dt):
+		return timedelta(0)
 
 # build an 'aware' datetime from two 'naive' datetime objects (that is timestamps
 # as present in the activities.json), using the time difference as offset
@@ -142,7 +149,7 @@ def offsetDateTime(timeLocal, timeGMT):
 	localDT = datetime.strptime(timeLocal, "%Y-%m-%d %H:%M:%S")
 	gmtDT = datetime.strptime(timeGMT, "%Y-%m-%d %H:%M:%S")
 	offset = localDT - gmtDT
-	offsetTz = FixedOffset(offset.seconds/60, "LCL")
+	offsetTz = FixedOffset(offset.seconds // 60, "LCL")
 	return localDT.replace(tzinfo=offsetTz)
 
 def hhmmssFromSeconds(sec):
@@ -168,7 +175,7 @@ parent_type_id = {
 	149: 'yoga' }
 
 # typeId values using pace instead of speed
-uses_pace = Set([1, 3, 9]) # running, hiking, walking
+uses_pace = {1, 3, 9} # running, hiking, walking
 
 def paceOrSpeedRaw(typeId, parentTypeId, mps):
 	kmh = 3.6 * mps
@@ -186,14 +193,11 @@ def paceOrSpeedFormatted(typeId, parentTypeId, mps):
 		return "{0:.1f}".format(round(kmh, 1))
 
 
-print 'Welcome to Garmin Connect Exporter!'
+print('Welcome to Garmin Connect Exporter!')
 
 # Create directory for data files.
 if isdir(args.directory):
-	print 'Warning: Output directory already exists. Will skip already-downloaded files and append to the CSV file.'
-
-username = args.username if args.username else raw_input('Username: ')
-password = args.password if args.password else getpass()
+	print('Warning: Output directory already exists. Will skip already-downloaded files and append to the CSV file.')
 
 # Maximum number of activities you can request at once.
 # Used to be 100 and enforced by Garmin for older endpoints; for the current endpoint 'url_gc_search'
@@ -233,10 +237,8 @@ data = {'service': REDIRECT,
     'embedWidget': 'false',
     'generateExtraServiceTicket': 'false'}
 
-print urllib.urlencode(data)
-
 # URLs for various services.
-url_gc_login     = 'https://sso.garmin.com/sso/signin?' + urllib.urlencode(data)
+url_gc_login     = 'https://sso.garmin.com/sso/signin?' + urlencode(data)
 url_gc_post_auth = 'https://connect.garmin.com/modern/activities?'
 #url_gc_summary   = 'https://connect.garmin.com/proxy/activity-search-service-1.2/json/activities?start=0&limit=1'
 url_gc_summary   = 'https://connect.garmin.com/modern/proxy/activitylist-service/activities/search/activities?start=0&limit=1'
@@ -247,29 +249,73 @@ url_gc_gpx_activity = 'https://connect.garmin.com/modern/proxy/download-service/
 url_gc_tcx_activity = 'https://connect.garmin.com/modern/proxy/download-service/export/tcx/activity/'
 url_gc_original_activity = 'http://connect.garmin.com/modern/proxy/download-service/files/activity/'
 
-# Initially, we need to get a valid session cookie, so we pull the login page.
-print 'Request login page'
-http_req(url_gc_login)
-print 'Finish login page'
+# Logs in to Garmin Connect. If two-factor authentication (MFA) is enabled on
+# the account, Garmin answers the credential POST with a form asking for the
+# one-time code instead of a service ticket; the code is then prompted
+# interactively and POSTed back to obtain the ticket.
+def garmin_login(username, password):
+	print(urlencode(data))
 
-# Now we'll actually login.
-post_data = {'username': username, 'password': password, 'embed': 'true', 'lt': 'e1s1', '_eventId': 'submit', 'displayNameRequired': 'false'}  # Fields that are passed in a typical Garmin login.
-print 'Post login data'
-login_response = http_req(url_gc_login, post_data)
-print 'Finish login post'
+	# Initially, we need to get a valid session cookie, so we pull the login page.
+	print('Request login page')
+	http_req(url_gc_login)
+	print('Finish login page')
 
-# extract the ticket from the login response
-pattern = re.compile(r".*\?ticket=([-\w]+)\";.*", re.MULTILINE|re.DOTALL)
-match = pattern.match(login_response)
-if not match:
-	raise Exception('Did not get a ticket in the login response. Cannot log in. Did you enter the correct username and password?')
-login_ticket = match.group(1)
-print 'login ticket=' + login_ticket
+	# Now we'll actually login.
+	post_data = {'username': username, 'password': password, 'embed': 'true', 'lt': 'e1s1', '_eventId': 'submit', 'displayNameRequired': 'false'}  # Fields that are passed in a typical Garmin login.
+	print('Post login data')
+	login_response = http_req(url_gc_login, post_data).decode('utf-8')
+	print('Finish login post')
 
-print 'Request authentication'
-# print url_gc_post_auth + 'ticket=' + login_ticket
-http_req(url_gc_post_auth + 'ticket=' + login_ticket)
-print 'Finished authentication'
+	# Two-factor authentication (MFA): resubmit with the one-time code.
+	if re.search(r'name=["\']?mfa-code', login_response):
+		print('Two-factor authentication (MFA) is enabled on this account.')
+		mfa_code = getpass('Garmin MFA code: ')
+		post_data['mfa-code'] = mfa_code
+		print('Post MFA code')
+		login_response = http_req(url_gc_login, post_data).decode('utf-8')
+		print('Finish MFA code post')
+
+	# extract the ticket from the login response
+	pattern = re.compile(r".*\?ticket=([-\w]+)\";.*", re.MULTILINE|re.DOTALL)
+	match = pattern.match(login_response)
+	if not match:
+		raise Exception('Did not get a ticket in the login response. Cannot log in. Did you enter the correct username, password and MFA code?')
+	login_ticket = match.group(1)
+	print('login ticket=' + login_ticket)
+
+	print('Request authentication')
+	# print url_gc_post_auth + 'ticket=' + login_ticket
+	http_req(url_gc_post_auth + 'ticket=' + login_ticket)
+	print('Finished authentication')
+
+def save_token(filename):
+	cookie_jar.save(filename, ignore_discard=True)
+	chmod(filename, 0o600)
+
+def load_token(filename):
+	if not isfile(filename):
+		return False
+	try:
+		cookie_jar.load(filename, ignore_discard=True)
+	except Exception:
+		return False
+	return True
+
+if args.login:
+	username = args.username if args.username else input('Username: ')
+	password = args.password if args.password else getpass()
+	garmin_login(username, password)
+	save_token(args.token_file)
+	print('Login successful. Session token stored in: ' + args.token_file)
+	sys.exit(0)
+
+if load_token(args.token_file):
+	print('Using stored session token from: ' + args.token_file)
+else:
+	username = args.username if args.username else input('Username: ')
+	password = args.password if args.password else getpass()
+	garmin_login(username, password)
 
 # We should be logged in now.
 if not isdir(args.directory):
@@ -344,16 +390,16 @@ Sample count\n')
 # Max. elevation (m),\
 # Activity parent,\
 
-download_start_index = (int)(args.start)
+download_start_index = int(args.start)
 download_index = download_start_index
 if args.count == 'all':
 	# If the user wants to download all activities, first download one,
 	# then the result of that request will tell us how many are available
 	# so we will modify the variables then.
-	print "Making result summary request ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
-	print url_gc_summary
-	result = http_req(url_gc_summary)
-	print "Finished result summary request ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
+	print("Making result summary request ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~")
+	print(url_gc_summary)
+	result = http_req(url_gc_summary).decode('utf-8')
+	print("Finished result summary request ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~")
 
 	# Persist JSON
 	json_filename = args.directory + '/activities-summary.json'
@@ -382,10 +428,10 @@ while download_index < download_stop_index:
 
 	search_params = {'start': download_index, 'limit': num_to_download}
 	# Query Garmin Connect
-	print "Making activity request ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
-	print url_gc_search + urlencode(search_params)
-	result = http_req(url_gc_search + urlencode(search_params))
-	print "Finished activity request ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
+	print("Making activity request ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~")
+	print(url_gc_search + urlencode(search_params))
+	result = http_req(url_gc_search + urlencode(search_params)).decode('utf-8')
+	print("Finished activity request ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~")
 
 	# Persist JSON
 	json_filename = args.directory + '/activities.json'
@@ -401,12 +447,12 @@ while download_index < download_stop_index:
 	activities = json_results
 
 	# Process each activity.
-        printed_index = download_index
+	printed_index = download_index
 	for a in activities:
 		# Display which entry we're working on.
-		print 'Garmin Connect activity #' + str(printed_index) + ': [' + str(a['activityId']) + ']',
-		print a['activityName']
-                printed_index += 1
+		print('Garmin Connect activity #' + str(printed_index) + ': [' + str(a['activityId']) + ']', end=' ')
+		print(a['activityName'])
+		printed_index += 1
 
 		# Retrieve also the detail data from the activity (the one displayed on
 		# the https://connect.garmin.com/modern/activity/xxx page), because some
@@ -416,14 +462,14 @@ while download_index < download_stop_index:
 		details = None
 		tries = max_tries
 		while tries > 0:
-			activity_details = http_req(url_gc_activity + str(a['activityId']))
+			activity_details = http_req(url_gc_activity + str(a['activityId'])).decode('utf-8')
 			details = json.loads(activity_details)
 			# I observed a failure to get a complete JSON detail in about 5-10 calls out of 1000
 			# retrying then statistically gets a better JSON ;-)
 			if len(details['summaryDTO']) > 0:
 				tries = 0
 			else:
-				print 'retrying for ' + str(a['activityId'])
+				print('retrying for ' + str(a['activityId']))
 				tries -= 1
 				if tries == 0:
 					raise Exception('Didn\'t get "summaryDTO" after ' + str(max_tries) + ' tries for ' + str(a['activityId']))
@@ -443,23 +489,23 @@ while download_index < download_stop_index:
 		endLatitude = fromActivitiesOrDetail('endLatitude', a, details, 'summaryDTO')
 		endLongitude = fromActivitiesOrDetail('endLongitude', a, details, 'summaryDTO')
 
-		print '\t' + startTimeWithOffset.isoformat() + ',',
+		print('\t' + startTimeWithOffset.isoformat() + ',', end=' ')
 		if 'duration' in a:
-			print hhmmssFromSeconds(a['duration']) + ',',
+			print(hhmmssFromSeconds(a['duration']) + ',', end=' ')
 		else:
-			print '??:??:??,',
+			print('??:??:??,', end=' ')
 		if 'distance' in a and a['distance']:
-			print "{0:.3f}".format(a['distance']/1000)
+			print("{0:.3f}".format(a['distance']/1000))
 		else:
-			print '0.000 km'
+			print('0.000 km')
 
 		# try to get the device details (and cache them, as they're used for multiple activities)
 		device = None
 		device_app_inst_id = None if absentOrNull('metadataDTO', details) else details['metadataDTO']['deviceApplicationInstallationId']
 		if device_app_inst_id:
-			if not (device_dict.has_key(device_app_inst_id)):
-				# print '\tGetting device details ' + str(device_app_inst_id)
-				device_details = http_req(url_gc_device + str(device_app_inst_id))
+			if not (device_app_inst_id in device_dict):
+				# print('\tGetting device details ' + str(device_app_inst_id))
+				device_details = http_req(url_gc_device + str(device_app_inst_id)).decode('utf-8')
 				device_filename = args.directory + '/device_' + str(device_app_inst_id) + '.json'
 				device_file = open(device_filename, 'a')
 				device_file.write(device_details)
@@ -471,7 +517,7 @@ while download_index < download_stop_index:
 			data_filename = args.directory + '/activity_' + str(a['activityId']) + '.gpx'
 			download_url = url_gc_gpx_activity + str(a['activityId']) + '?full=true'
 			# download_url = url_gc_gpx_activity + str(a['activityId']) + '?full=true' + '&original=true'
-			print download_url
+			print(download_url)
 			file_mode = 'w'
 		elif args.format == 'tcx':
 			data_filename = args.directory + '/activity_' + str(a['activityId']) + '.tcx'
@@ -490,10 +536,10 @@ while download_index < download_stop_index:
 			raise Exception('Unrecognized format.')
 
 		if isfile(data_filename):
-			print '\tData file already exists; skipping...'
+			print('\tData file already exists; skipping...')
 			continue
 		if args.format == 'original' and ( isfile(fit_filename) or isfile(fit_filename_alt) ):  # Regardless of unzip setting, don't redownload if the ZIP or FIT file exists.
-			print '\tFIT data file already exists; skipping...'
+			print('\tFIT data file already exists; skipping...')
 			continue
 
 		if args.format != 'json':
@@ -501,24 +547,25 @@ while download_index < download_stop_index:
 			# If the download fails (e.g., due to timeout), this script will die, but nothing
 			# will have been written to disk about this activity, so just running it again
 			# should pick up where it left off.
-			print '\tDownloading file...',
+			print('\tDownloading file...', end=' ')
 
 			try:
-				data = http_req(download_url)
-			except urllib2.HTTPError as e:
+				raw_data = http_req(download_url)
+				data = raw_data if args.format == 'original' else raw_data.decode('utf-8')
+			except urllib.error.HTTPError as e:
 				# Handle expected (though unfortunate) error codes; die on unexpected ones.
 				if e.code == 500 and args.format == 'tcx':
 					# Garmin will give an internal server error (HTTP 500) when downloading TCX files if the original was a manual GPX upload.
 					# Writing an empty file prevents this file from being redownloaded, similar to the way GPX files are saved even when there are no tracks.
 					# One could be generated here, but that's a bit much. Use the GPX format if you want actual data in every file,
 					# as I believe Garmin provides a GPX file for every activity.
-					print 'Writing empty file since Garmin did not generate a TCX file for this activity...',
+					print('Writing empty file since Garmin did not generate a TCX file for this activity...', end=' ')
 					data = ''
 				elif e.code == 404 and args.format == 'original':
 					# For manual activities (i.e., entered in online without a file upload), there is no original file.
 					# Write an empty file to prevent redownloading it.
-					print 'Writing empty file since there was no original activity data...',
-					data = ''
+					print('Writing empty file since there was no original activity data...', end=' ')
+					data = b''
 				else:
 					raise Exception('Failed. Got an unexpected HTTP error (' + str(e.code) + download_url +').')
 		else:
@@ -598,7 +645,7 @@ while download_index < download_stop_index:
 #		csv_record += empty_record if absentOrNull('maxAirTemperature', a) else '"' + a['maxAirTemperature']['withUnitAbbr'].replace('"', '""') + '",'
 #		csv_record += empty_record if absentOrNull('activityType', a) else '"' + a['activityType']['parent']['display'].replace('"', '""') + '",'
 
-		csv_file.write(csv_record.encode('utf8'))
+		csv_file.write(csv_record)
 
 		if args.format == 'gpx' and data:
 			# Validate GPX data. If we have an activity without GPS data (e.g., running on a treadmill),
@@ -608,13 +655,13 @@ while download_index < download_stop_index:
 			gpx_data_exists = len(gpx.getElementsByTagName('trkpt')) > 0
 
 			if gpx_data_exists:
-				print 'Done. GPX data saved.'
+				print('Done. GPX data saved.')
 			else:
-				print 'Done. No track points found.'
+				print('Done. No track points found.')
 		elif args.format == 'original':
 			if args.unzip and data_filename[-3:].lower() == 'zip':  # Even manual upload of a GPX file is zipped, but we'll validate the extension.
-				print "Unzipping and removing original files...",
-				print 'Filesize is: ' + str(stat(data_filename).st_size)
+				print("Unzipping and removing original files...", end=' ')
+				print('Filesize is: ' + str(stat(data_filename).st_size))
 				if stat(data_filename).st_size > 0:
 					zip_file = open(data_filename, 'rb')
 					z = zipfile.ZipFile(zip_file)
@@ -622,22 +669,22 @@ while download_index < download_stop_index:
 						z.extract(name, args.directory)
 					zip_file.close()
 				else:
-					print 'Skipping 0Kb zip file.'
+					print('Skipping 0Kb zip file.')
 				remove(data_filename)
-			print 'Done.'
+				print('Done.')
 		elif args.format == 'json':
 			# print nothing here
 			pass
 		else:
 			# TODO: Consider validating other formats.
-			print 'Done.'
+			print('Done.')
 	download_index += num_to_download
 # End while loop for multiple chunks.
 
 csv_file.close()
 
-print 'Open CSV output.'
-print csv_filename
+print('Open CSV output.')
+print(csv_filename)
 # call(["open", csv_filename])
 
-print 'Done!'
+print('Done!')
